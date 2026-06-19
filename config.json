@@ -6,32 +6,32 @@
       "Pin": 17,
       "State": false,
       "OverrideState": false,
-      "TimeStart": "20:21",
-      "Duration": 9
+      "TimeStart": "19:10",
+      "Duration": 5
     },
     {
       "Id": "Valvola 2",
       "Pin": 27,
-      "State": false,
-      "OverrideState": false,
-      "TimeStart": "20:30",
+      "State": true,
+      "OverrideState": true,
+      "TimeStart": "19:10",
       "Duration": 1
     },
     {
       "Id": "Valvola 3",
       "Pin": 22,
-      "State": false,
-      "OverrideState": false,
-      "TimeStart": "20:30",
-      "Duration": 30
+      "State": true,
+      "OverrideState": true,
+      "TimeStart": "19:10",
+      "Duration": 5
     },
     {
       "Id": "Valvola 4",
       "Pin": 5,
-      "State": false,
-      "OverrideState": false,
-      "TimeStart": "20:30",
-      "Duration": 30
+      "State": true,
+      "OverrideState": true,
+      "TimeStart": "19:10",
+      "Duration": 5
     }
   ]
 }

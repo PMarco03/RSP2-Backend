@@ -3,127 +3,235 @@ from flask_cors import CORS
 import json
 import threading
 import time
-from datetime import datetime, timedelta
 
 CONFIG_PATH = "config.json"
 
 app = Flask(__name__)
 CORS(app)
 
+config_lock = threading.Lock()
+
+
 def load_config():
-    with open(CONFIG_PATH, "r") as f:
-        return json.load(f)
+    with config_lock:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+
 
 def save_config(data):
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(data, f, indent=2)
+    with config_lock:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+
+# ─────────────────────────────────────────────
+# TIME
+# ─────────────────────────────────────────────
+
+@app.route("/getDate", methods=["GET"])
+def get_date():
+    return str(int(time.time())), 200, {"Content-Type": "text/plain"}
+
+
+# ─────────────────────────────────────────────
+# STATES (light)
+# ─────────────────────────────────────────────
 
 @app.route("/states", methods=["GET"])
 def get_states():
     config = load_config()
-    return jsonify(config)
 
-@app.route("/override", methods=["POST"])
-def update_state():
-    data = request.get_json()
-    override_state = data.get("OverrideState")
-    valve_id = data.get("Id")
-
-    config = load_config()
-    for valve in config["Valves"]:
-        if valve["Id"] == valve_id:
-            valve["OverrideState"] = bool(override_state)
-            break
-
-    save_config(config)
-    return jsonify({"status": "ok", "updated": valve_id})
-
-@app.route("/toggleglobalstate", methods=["POST"])
-def toggle_GlobalState():
-    data = request.get_json()
-    globalState = data.get("GlobalState")
-    config = load_config()
-    config["GlobalState"] = bool(globalState)
-    save_config(config)
-    return jsonify({"status": "ok", "GlobalState": globalState})
-
-@app.route("/update", methods=["POST"])
-def update_valves():
-    data = request.get_json()
-    valves_data = data.get("valves", [])
-    config = load_config()
-
-    for new_valve in valves_data:
-        vid = new_valve.get("Id")
-        tstart = new_valve.get("TimeStart")
-        duration = new_valve.get("Duration")
-
-        for valve in config["Valves"]:
-            if valve["Id"] == vid:
-                if tstart is not None:
-                    valve["TimeStart"] = tstart
-                if duration is not None:
-                    valve["Duration"] = duration
-                break
-
-    save_config(config)
-    return jsonify({"status": "ok", "updated_count": len(valves_data)})
-
-@app.route("/status", methods=["GET"])
-def get_status():
-    config = load_config()
-    status = {
-        "GlobalState": config.get("GlobalState", False),
+    return jsonify({
+        "GlobalState": config["GlobalState"],
         "Valves": [
             {
                 "Id": v["Id"],
                 "State": v["State"],
                 "OverrideState": v["OverrideState"]
-            } for v in config["Valves"]
+            }
+            for v in config["Valves"]
         ]
-    }
-    return jsonify(status)
+    })
 
-def scheduler():
-    while True:
-        try:
-            config = load_config()
-            now = datetime.now()
-            if(config.get("GlobalState", False) == True):
-                for valve in config["Valves"]:
-                    if valve.get("OverrideState",False) == valve.get("State",False):
-                        try:
-                            t_raw = valve.get("TimeStart", "00:00")
-                            duration = int(valve.get("Duration", 0))
 
-                            # Gestisce vari formati (HH:MM o HH:MM:SS)
-                            try:
-                                t_start = datetime.strptime(t_raw, "%H:%M").time()
-                            except ValueError:
-                                t_start = datetime.strptime(t_raw, "%H:%M:%S").time()
+# ─────────────────────────────────────────────
+# OVERRIDE ONLY
+# ─────────────────────────────────────────────
 
-                            start_dt = datetime.combine(datetime.today(), t_start)
-                            end_dt = start_dt + timedelta(minutes=duration)
+@app.route("/override", methods=["POST"])
+def update_override():
+    data = request.get_json()
 
-                            if start_dt <= now <= end_dt:
-                                valve["State"] = True
-                                valve["OverrideState"] = True
-                            else:
-                                valve["State"] = False
-                                valve["OverrideState"] = False
+    valve_id = data.get("Id")
+    override_state = data.get("OverrideState")
 
-                        except Exception as e:
-                            print(f"Errore nella valvola {valve.get('Id')}: {e}")
-                            continue
+    if valve_id is None or override_state is None:
+        return jsonify({"status": "error"}), 400
 
+    config = load_config()
+
+    for v in config["Valves"]:
+        if v["Id"] == valve_id:
+            v["OverrideState"] = bool(override_state)
             save_config(config)
-        except Exception as e:
-            print("Errore scheduler:", e)
+            return jsonify({"status": "ok", "updated": valve_id})
 
-        time.sleep(1)
+    return jsonify({"status": "error", "message": "not found"}), 404
 
+
+# ─────────────────────────────────────────────
+# SAVE FULL CONFIG (NO Pin, NO State, NO OverrideState)
+# ─────────────────────────────────────────────
+
+@app.route("/update", methods=["POST"])
+def update_config():
+    """
+    {
+      "GlobalState": true,
+      "Valves": [
+        {
+          "Id": "Valvola 1",
+          "TimeStart": "06:00",
+          "Duration": 15
+        }
+      ]
+    }
+    """
+
+    data = request.get_json()
+
+    if not data:
+        return jsonify({"status": "error"}), 400
+
+    config = load_config()
+
+    # GlobalState update (solo qui)
+    if "GlobalState" in data:
+        config["GlobalState"] = bool(data["GlobalState"])
+
+    incoming_valves = data.get("Valves", [])
+
+    updated = []
+
+    for incoming in incoming_valves:
+        valve_id = incoming.get("Id")
+
+        for v in config["Valves"]:
+            if v["Id"] != valve_id:
+                continue
+
+            if "TimeStart" in incoming:
+                v["TimeStart"] = incoming["TimeStart"]
+
+            if "Duration" in incoming:
+                v["Duration"] = int(incoming["Duration"])
+
+            updated.append(valve_id)
+            break
+
+    save_config(config)
+
+    return jsonify({
+        "status": "ok",
+        "updated": updated
+    })
+# ─────────────────────────────────────────────
+# UPDATE STATES (SOLO RUNTIME)
+# ─────────────────────────────────────────────
+
+@app.route("/updatestates", methods=["POST"])
+def update_states():
+    """
+    {
+      "GlobalState": true,
+      "Valves": [
+        { "State": true },
+        { "State": false }
+      ]
+    }
+    """
+
+    data = request.get_json()
+
+    if not data:
+        return jsonify({
+            "status": "error",
+            "message": "missing body"
+        }), 400
+
+    incoming = data.get("Valves")
+
+    if incoming is None:
+        return jsonify({
+            "status": "error",
+            "message": "Valves missing"
+        }), 400
+
+    config = load_config()
+
+    changed = False
+
+    for i, v_in in enumerate(incoming):
+        if i >= len(config["Valves"]):
+            break
+
+        new_state = bool(v_in.get("State", False))
+
+        if config["Valves"][i]["State"] != new_state:
+            config["Valves"][i]["State"] = new_state
+            changed = True
+
+    if "GlobalState" in data:
+        config["GlobalState"] = bool(data["GlobalState"])
+
+    if changed:
+        save_config(config)
+
+    return jsonify({
+        "status": "ok",
+        "changed": changed
+    })
+# ─────────────────────────────────────────────
+# PROGRAMMAZIONE COMPLETA (SOLO SCHEDULING)
+# ─────────────────────────────────────────────
+
+@app.route("/program", methods=["GET"])
+def get_program():
+    config = load_config()
+
+    return jsonify({
+        "GlobalState": config["GlobalState"],
+        "Valves": [
+            {
+                "Id": v["Id"],
+                "TimeStart": v.get("TimeStart"),
+                "Duration": v.get("Duration")
+            }
+            for v in config["Valves"]
+        ]
+    })
+
+@app.route("/overridestates", methods=["GET"])
+def get_override():
+    config = load_config()
+
+    return jsonify({
+        "GlobalState": config["GlobalState"],
+        "Valves": [
+            {
+                "Id": v["Id"],
+                "OverrideState": v.get("OverrideState")
+            }
+            for v in config["Valves"]
+        ]
+    })
+# ─────────────────────────────────────────────
+# START
+# ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    thread = threading.Thread(target=scheduler, daemon=True)
-    thread.start()
-    app.run(host="0.0.0.0", port=5000)
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        threaded=True
+    )
