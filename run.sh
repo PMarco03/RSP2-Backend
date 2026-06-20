@@ -2,9 +2,12 @@
 
 cd /home/RSP2-Backend
 
-python3 -m venv venv
+if [ ! -d "venv" ]; then
+    python3 -m venv venv
+fi
+
 . venv/bin/activate
 
-pip install flask flask-cors
+pip install -q flask flask-cors gunicorn
 
-python start.py
+gunicorn -w 2 -b 0.0.0.0:5000 start:app
